@@ -32,6 +32,15 @@ int out_size = 128;
 int in_arr_size = 36663;
 int out_arr_size = 36920;
 
+// Create random pair of bits (r_0^i, r_1^i)
+vector<vector<int>> r_pair(2, std::vector<int>(in_arr_size));
+
+// Create the encryptio of random pair of bits (r_0^i, r_1^i)
+vector<vector<LweSample*>> enc_pair(2, std::vector<LweSample*>(in_arr_size));
+
+// Create an empty LUT
+std::vector<std::vector<std::vector<LweSample*>>> LUT(in_arr_size, std::vector<std::vector<LweSample*>>(2, std::vector<LweSample*>(2)));
+
 // Initialize LWE parameters
 TFheGateBootstrappingParameterSet *initialize_gate_bootstrapping_params() {
     static const int32_t N = 1024;
@@ -57,18 +66,18 @@ TFheGateBootstrappingParameterSet *initialize_gate_bootstrapping_params() {
 }
 
 // A structure to represent an 80-bit seed
-struct Seed80 {
-    uint32_t part1; // Lower 32 bits
-    uint32_t part2; // Middle 32 bits
-    uint16_t part3; // Upper 16 bits
-};
+// struct Seed80 {
+//     uint32_t part1; // Lower 32 bits
+//     uint32_t part2; // Middle 32 bits
+//     uint16_t part3; // Upper 16 bits
+// };
 
-// Function to combine the 80-bit seed into a seed sequence (The Mersenne Twister)
-std::seed_seq generateSeedSeq(const Seed80& seed) {
-    // Combine parts into a vector of 32-bit integers
-    std::array<uint32_t, 3> seedArray = { seed.part1, seed.part2, seed.part3 };
-    return std::seed_seq(seedArray.begin(), seedArray.end());
-}
+// // Function to combine the 80-bit seed into a seed sequence (The Mersenne Twister)
+// std::seed_seq generateSeedSeq(const Seed80& seed) {
+//     // Combine parts into a vector of 32-bit integers
+//     std::array<uint32_t, 3> seedArray = { seed.part1, seed.part2, seed.part3 };
+//     return std::seed_seq(seedArray.begin(), seedArray.end());
+// }
 
 void TLweFromLwe(TLweSample *ring_cipher, LweSample *cipher, TLweParams *tlwe_params){
     int N = tlwe_params->N;
@@ -246,61 +255,43 @@ void PRFEval(vector<LweSample*> &enc_prf_output, const vector<std::vector<int>>&
         lweCopy(prf_output_arr[i + in_size], enc_prf_key[i], params);
     }
 
-    static const Torus32 MU = modSwitchToTorus32(1, 8);
-
     for (int i = 0; i < netlist.size(); ++i) {
     
-        if (netlist[i].back() == 0 && netlist[i].front() == 2) { // XOR operation
+        if (netlist[i].front() == 2) { // XOR/AND operation
             int in1 = netlist[i][2];
             int in2 = netlist[i][3];
             int out = netlist[i][4];
-
-            // bootsXOR(prf_output_arr[out], prf_output_arr[in1], prf_output_arr[in2], bk);
             
             const LweParams *in_out_params = bk->params->in_out_params;
-            LweSample *temp_result = new_LweSample(in_out_params);
+            LweSample *temp_result1 = new_LweSample(in_out_params);
+            LweSample *temp_result2 = new_LweSample(in_out_params);
 
             //compute: (0,1/4) + 2*(ca + cb)
             static const Torus32 XorConst = modSwitchToTorus32(1, 4);
-            lweNoiselessTrivial(temp_result, XorConst, in_out_params);
-            lweAddMulTo(temp_result, 2, prf_output_arr[in1], in_out_params);
-            lweAddMulTo(temp_result, 2, prf_output_arr[in2], in_out_params);
+            lweNoiselessTrivial(temp_result1, XorConst, in_out_params);
+            lweNoiselessTrivial(temp_result2, XorConst, in_out_params);
+
+            lweAddMulTo(temp_result1, 2, prf_output_arr[in1], in_out_params);
+            lweAddMulTo(temp_result1, 2, enc_pair[0][i], in_out_params);
+
+            lweAddMulTo(temp_result2, 2, prf_output_arr[in2], in_out_params);
+            lweAddMulTo(temp_result2, 2, enc_pair[1][i], in_out_params);
 
             if (flag == 1){
-                auto result_msg = threshold_decrypt_lisss(temp_result, key, t, p);
+                auto result_msg1 = threshold_decrypt_lisss(temp_result1, key, t, p);
+                auto result_msg2 = threshold_decrypt_lisss(temp_result2, key, t, p);
+
+                lweCopy(prf_output_arr[out], LUT[i][result_msg1][result_msg2], params);
             }
-            else
-                auto result_msg = threshold_decrypt_additive(temp_result, key, p);
+            else{
+                auto result_msg1 = threshold_decrypt_additive(temp_result1, key, p);
+                auto result_msg2 = threshold_decrypt_additive(temp_result2, key, p);
 
-            lweCopy(prf_output_arr[out], temp_result, params);
-
-            delete_LweSample(temp_result);
-
-        }
-        else if (netlist[i].back() == 1 && netlist[i].front() == 2) { // AND operation
-            int in1 = netlist[i][2];
-            int in2 = netlist[i][3];
-            int out = netlist[i][4];
-
-            // bootsAND(prf_output_arr[out], prf_output_arr[in1], prf_output_arr[in2], bk);
-            const LweParams *in_out_params = bk->params->in_out_params;
-            LweSample *temp_result = new_LweSample(in_out_params);
-
-            //compute: (0,-1/8) + ca + cb
-            static const Torus32 AndConst = modSwitchToTorus32(-1, 8);
-            lweNoiselessTrivial(temp_result, AndConst, in_out_params);
-            lweAddTo(temp_result, prf_output_arr[in1], in_out_params);
-            lweAddTo(temp_result, prf_output_arr[in2], in_out_params);
-
-            if (flag == 1){
-                auto result_msg = threshold_decrypt_lisss(temp_result, key, t, p);
+                lweCopy(prf_output_arr[out], LUT[i][result_msg1][result_msg2], params);
             }
-            else
-                auto result_msg = threshold_decrypt_additive(temp_result, key, p);
 
-            lweCopy(prf_output_arr[out], temp_result, params);
-
-            delete_LweSample(temp_result);
+            delete_LweSample(temp_result1);
+            delete_LweSample(temp_result2);
 
         }
         else{ // NOT operation
@@ -327,13 +318,13 @@ int main(int argc, char* argv[]) {
     int flag = std::atoi(argv[3]);
 
     // Initialize the 80-bit seed
-    Seed80 seed_prg = {0x12345678, 0x9ABCDEF0, 0x1357};
+    // Seed80 seed_prg = {0x12345678, 0x9ABCDEF0, 0x1357};
 
     // Generate a seed sequence from the 80-bit seed
-    std::seed_seq seedSeq = generateSeedSeq(seed_prg);
+    // std::seed_seq seedSeq = generateSeedSeq(seed_prg);
 
     // Create the Mersenne Twister PRNG with the given seed sequence
-    std::mt19937 prng(seedSeq);
+    // std::mt19937 prng(seedSeq);
 
     // Generate and print 32 x n bits (here n = 500 for demonstration)
     // for (int i = 0; i < 500; ++i) {
@@ -350,6 +341,71 @@ int main(int argc, char* argv[]) {
 
     auto pk = PubKey(sk, 1);
 
+    // Populate the random pair of bits (r_0^i, r_1^i)
+    for (int i= 0; i < in_arr_size; i++)
+    {
+        r_pair[0][i]= rand() % 2; // Message
+        r_pair[1][i]= rand() % 2; // Key
+    }
+
+    // Fill the encrypted bit pair array
+    for (int i = 0; i < in_arr_size; ++i) {
+        enc_pair[0][i] = new_LweSample(params);
+        pk.Encrypt(enc_pair[0][i], r_pair[0][i]);
+
+        enc_pair[1][i] = new_LweSample(params);
+        pk.Encrypt(enc_pair[1][i], r_pair[1][i]);
+    }
+
+    // Read PRF netlist
+    cout << "\n\nLoading Circuit . . ." << endl;
+    vector<vector<int>> prf_netlist = readNetlist("test/aes_128.txt");
+
+    for (int i = 0; i < prf_netlist.size(); ++i) {
+        for (int j = 0; j < 2; ++j) {
+            for (int k = 0; k < 2; ++k) {
+                LUT[i][j][k] = new_LweSample(params);  // Dynamically allocate memory
+            }
+        }
+    }
+
+    // Fill the LUTs
+    for (int i = 0; i < prf_netlist.size(); ++i) {
+    
+        if (prf_netlist[i].back() == 0) { // XOR operation
+            int temp_00 = (0 ^ r_pair[0][i]) ^ (0 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][0][0], temp_00);
+
+            int temp_01 = (0 ^ r_pair[0][i]) ^ (1 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][0][1], temp_01);
+
+            int temp_10 = (1 ^ r_pair[0][i]) ^ (0 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][1][0], temp_10);
+
+            int temp_11 = (1 ^ r_pair[0][i]) ^ (1 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][1][1], temp_11);
+
+        }
+
+        else if (prf_netlist[i].back() == 1) { // AND operation
+            int temp_00 = (0 ^ r_pair[0][i]) & (0 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][0][0], temp_00);
+
+            int temp_01 = (0 ^ r_pair[0][i]) & (1 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][0][1], temp_01);
+
+            int temp_10 = (1 ^ r_pair[0][i]) & (0 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][1][0], temp_10);
+
+            int temp_11 = (1 ^ r_pair[0][i]) & (1 ^ r_pair[1][i]);
+            pk.Encrypt(LUT[i][1][1], temp_11);
+
+        }
+        else{ // NOT operation
+            continue;
+        }
+    }
+    
     vector<vector<int>> inp(2, std::vector<int>(in_size));
     vector<int> outp(out_size);
 
@@ -367,10 +423,6 @@ int main(int argc, char* argv[]) {
     cout << "\n\nKey: " << endl;
     for (int i=0; i < in_size; i++)
         cout << inp[1][i] << " ";
-
-    // Read PRF netlist
-    cout << "\n\nLoading Circuit . . ." << endl;
-    vector<vector<int>> prf_netlist = readNetlist("test/aes_128.txt");
 
     // Initialize prf msg and prf key
     std::vector<LweSample*> prf_msg(in_size);
